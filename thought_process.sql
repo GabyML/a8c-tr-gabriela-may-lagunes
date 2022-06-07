@@ -646,6 +646,7 @@ group by user_id, churn_category, churn_category_month
 -- Ok, for now run the query that gives you already the churn rate per month. I think it would be really great to have the
 -- disagregated table as a view, but for now let's do this
 
+-- base query for getting ccr per month:
 select churn_category_month,
        SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
        MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
@@ -670,11 +671,15 @@ from (
       ) as foo
 ) as temp
 group by churn_category, churn_category_month
+
 ) as temp1
 group by churn_category_month
 
-
-
+-- I get this error when I try to run the query in HUE for all 4 years
+/*
+{'message': "Number of stages in the query (110) exceeds the allowed maximum (100). If the query contains multiple aggregates with DISTINCT over different columns, please set the 'use_mark_distinct' session property to false. If the query contains WITH clauses that are referenced more than once, please create temporary table(s) for the queries in those clauses.", 'errorCode': 40, 'errorName': 'QUERY_HAS_TOO_MANY_STAGES', 'errorType': 'USER_ERROR', 'failureInfo': {'type': 'io.trino.spi.TrinoException', 'message': "Number of stages in the query (110) exceeds the allowed maximum (100). If the query contains multiple aggregates with DISTINCT over different columns, please set the 'use_mark_distinct' session property to false. If the query contains WITH clauses that are referenced more than once, please create temporary table(s) for the queries in those clauses.", 'suppressed': [], 'stack': ['io.trino.sql.planner.PlanFragmenter.sanityCheckFragmentedPlan(PlanFragmenter.java:144)', 'io.trino.sql.planner.PlanFragmenter.createSubPlans(PlanFragmenter.java:134)', 'io.trino.execution.SqlQueryExecution.doPlanQuery(SqlQueryExecution.java:477)', 'io.trino.execution.SqlQueryExecution.planQuery(SqlQueryExecution.java:454)', 'io.trino.execution.SqlQueryExecution.start(SqlQueryExecution.java:395)', 'io.trino.execution.SqlQueryManager.createQuery(SqlQueryManager.java:243)', 'io.trino.dispatcher.LocalDispatchQuery.lambda$startExecution$7(LocalDispatchQuery.java:143)', 'io.trino.$gen.Trino_374____20220525_171117_2.run(Unknown Source)', 'java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1128)', 'java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:628)', 'java.base/java.lang.Thread.run(Thread.java:829)']}}
+*/
+-- So I run first 2015-2016, then 2017-2018
 
 --questions coming up:
 --What is the distribution of product_ownership_id per user?
@@ -682,3 +687,440 @@ group by churn_category_month
 --How can I differentiate customers that pay monthly to those that pay yearly?
 --Should I used cancellation date or end date?
 -- I'm using cancelled and not end because I am assuming that a customer can reactivate a product after it expires (edited)
+
+-- 2018-01
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01') then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01') then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01') as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01')
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+union
+
+-- 2018-02
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01' + interval '1' month) then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01' + interval '1' month) then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01' + interval '1' month) as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01' + interval '1' month)
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+union
+-- 2018-03
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01' + interval '2' month) then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01' + interval '2' month) then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01' + interval '2' month) as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01' + interval '2' month)
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+union
+
+-- 2018-04
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01' + interval '3' month) then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01' + interval '3' month) then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01' + interval '3' month) as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01' + interval '3' month)
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+union
+
+-- 2018-05
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01' + interval '4' month) then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01' + interval '4' month) then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01' + interval '4' month) as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01' + interval '4' month)
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+union
+
+-- 2018-06
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01' + interval '5' month) then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01' + interval '5' month) then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01' + interval '5' month) as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01' + interval '5' month)
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+union
+
+-- 2018-07
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01' + interval '6' month) then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01' + interval '6' month) then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01' + interval '6' month) as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01' + interval '6' month)
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+union
+
+-- 2018-08
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01' + interval '7' month) then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01' + interval '7' month) then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01' + interval '7' month) as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01' + interval '7' month)
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+union
+
+-- 2018-09
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01' + interval '8' month) then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01' + interval '8' month) then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01' + interval '8' month) as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01' + interval '8' month)
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+union
+
+-- 2018-10
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01' + interval '9' month) then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01' + interval '9' month) then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01' + interval '9' month) as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01' + interval '9' month)
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+union
+
+-- 2018-11
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01' + interval '10' month) then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01' + interval '10' month) then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01' + interval '10' month) as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01' + interval '10' month)
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+union
+
+-- 2018-12
+select product_slug, churn_category_month,
+       SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as total_active,
+       MAX(case when churn_category = 'churned' then user_count else 0 end) as total_churned,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double) as ccr_monthly,
+       cast(MAX(case when churn_category = 'churned' then user_count else 0 end) as double)/cast(SUM(case when churn_category = 'inactive' THEN 0 ELSE user_count END) as double)*100 as ccr_monthly_percentage
+from (
+select product_slug, churn_category, churn_category_month, count(distinct user_id) as user_count from (
+      select user_id, product_slug,
+            (case when at_least_one_null = 1 then 'active'
+              when at_least_one_null = 0 and (max_c_date >= date '2018-02-01' + interval '11' month) then 'active'
+              when at_least_one_null = 0 and (max_c_date < date '2018-01-01' + interval '11' month) then 'inactive'
+              else 'churned' end) as churn_category,
+            (date '2018-01-01' + interval '11' month) as churn_category_month
+      from (
+        select user_id, product_slug,
+             max(case when cancellation_date is null then 1
+                     else 0 end) over (partition by user_id) as at_least_one_null,
+             max(case when cancellation_date is null then date '1970-01-01'
+                     else cast(SUBSTRING(cancellation_date, 1, 10) AS date) end) over (partition by user_id) as max_c_date -- get the newest cancellation date
+        from trial.billing_combined
+        where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-02-01' + interval '11' month)
+           ) as foo
+                ) as temp
+      group by product_slug, churn_category, churn_category_month
+      ) as temp1
+      group by product_slug, churn_category_month
+
+order by churn_category_month asc, ccr_monthly_percentage desc
+
+
+
+-- There are more than 333k entries with empty product slug
+select product_slug, count(*)
+from trial.billing_combined
+where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2016-06-01')
+and cast(SUBSTRING(date_only, 1, 10) AS date) >= (date '2016-05-01')
+group by product_slug
+
+select product_slug, count(*)
+from trial.billing_combined
+where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2015-06-01')
+and cast(SUBSTRING(date_only, 1, 10) AS date) >= (date '2015-05-01')
+group by product_slug
+
+select product_slug, count(*)
+from trial.billing_combined
+where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2017-06-01')
+and cast(SUBSTRING(date_only, 1, 10) AS date) >= (date '2017-05-01')
+group by product_slug
+
+select product_slug, count(*)
+from trial.billing_combined
+where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-06-01')
+and cast(SUBSTRING(date_only, 1, 10) AS date) >= (date '2018-05-01')
+group by product_slug
+
+select count(*)
+from trial.billing_combined
+where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2016-06-01')
+and cast(SUBSTRING(date_only, 1, 10) AS date) >= (date '2016-05-01')
+and product_slug = ''
+and type = 'cancellation'
+limit 100
+
+select *
+from trial.billing_combined
+where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2016-06-01')
+and cast(SUBSTRING(date_only, 1, 10) AS date) >= (date '2016-05-01')
+and user_id = 95767197
+limit 100
+
+---- weird... there are 333024 entries in May 2016 that are cancellations and have an empty (= '') product_slug
+select count(*)
+from trial.billing_combined
+where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2016-06-01')
+and cast(SUBSTRING(date_only, 1, 10) AS date) >= (date '2016-05-01')
+and product_slug = ''
+---and type = 'cancellation'
+limit 100
+
+--- how many entries like these are there for the three years?
+select count(*)
+from trial.billing_combined
+where cast(SUBSTRING(date_only, 1, 10) AS date) < (date '2018-12-31')
+and cast(SUBSTRING(date_only, 1, 10) AS date) >= (date '2015-01-01')
+and product_slug = ''
+---and type = 'cancellation'
+limit 100
+
+
+--------------------- June 2nd ---------------------
+
+-- These past couple of days I have been working on getting to see what products each customer had before churning
+-- In that process and after discussing with Julio, I concluded that it was better to know when an individual product was left by the customer
+-- instead of waiting until the customer left completely
+-- so now I am going to change the queries to get product churn instead of customer churn alone.
+-- And I am going to focus the visuals to the 11 products that I can see on the dashboards in the jetpack sales dashboards
+
+-- ALSO! remember you found a bug looking thing with the product_slug being empty, so get ride of all of those
+
+----------------------------- June 3rd -----------------------------
+
+-- Ok, we got total churn products and churn rate per product per month...
+-- Now, two last things before reporting:
+-- Let's calculate how much money did those churns cost...
+-- And let's see if we can find a way to  
